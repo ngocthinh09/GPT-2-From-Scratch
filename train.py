@@ -38,7 +38,13 @@ if __name__ == "__main__":
     if torch.cuda.is_available():
         torch.cuda.manual_seed(1337)
     
-    B, T = 8, 512
+    total_batch_size = 524288
+    B = 4
+    T = 1024
+    assert total_batch_size % (B * T) == 0, "Total batch size must be divisible by B * T"
+    gradient_accumulation_steps = total_batch_size // (B * T)
+    print(f"Total Desired Batch Size: {total_batch_size}")
+    print(f"Gradient Accumulation Steps: {gradient_accumulation_steps}")
     train_loader = DataLoaderLite(B, T)
     
     model = GPT(GPTConfig())
@@ -49,12 +55,16 @@ if __name__ == "__main__":
     
     for step in range(max_steps):
         t0 = time.time()
-        x, y = train_loader.next_batch()
-        x, y = x.to(device), y.to(device)
         optimizer.zero_grad()
-        with torch.autocast(device_type=device, dtype=torch.bfloat16):
-            logits, loss = model(x, y)
-        loss.backward()
+        loss_accum = 0.0
+        for micro_step in range(gradient_accumulation_steps):
+            x, y = train_loader.next_batch()
+            x, y = x.to(device), y.to(device)
+            with torch.autocast(device_type=device, dtype=torch.bfloat16):
+                logits, loss = model(x, y)
+            loss = loss / gradient_accumulation_steps
+            loss_accum += loss.detach()
+            loss.backward()
         norm = torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
         lr = get_lr(step)
         for param_group in optimizer.param_groups:
@@ -63,5 +73,5 @@ if __name__ == "__main__":
         torch.cuda.synchronize() if torch.cuda.is_available() else None
         t1 = time.time()
         dt = (t1 - t0) * 1000
-        tokens_per_sec = train_loader.B * train_loader.T / (t1 - t0)
-        print(f"Step: {step}| Loss: {loss.item()}| LR: {lr:.2e}| Grad Norm: {norm.item():.2f}| Time: {dt:.2f} ms| Tokens/sec: {tokens_per_sec:.2f}")
+        tokens_per_sec = train_loader.B * train_loader.T * gradient_accumulation_steps / (t1 - t0)
+        print(f"Step: {step}| Loss: {loss_accum.item()}| LR: {lr:.2e}| Grad Norm: {norm.item():.2f}| Time: {dt:.2f} ms| Tokens/sec: {tokens_per_sec:.2f}")
