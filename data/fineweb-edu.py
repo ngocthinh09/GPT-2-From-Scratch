@@ -5,17 +5,25 @@ Downloads and tokenizes the data and saves data shards to disk.
 Run simply as: `python data/fineweb-edu.py` will download the data, tokenize it, and save the tokenized data to the local directory 'data/fineweb-edu-10B/'
 """
 
+import argparse
 import os
 import numpy as np
 import tiktoken
 from datasets import load_dataset
 from tqdm import tqdm
 
+parser = argparse.ArgumentParser(description="FineWeb-Edu Dataset Processing Script")
+parser.add_argument('--local_dir', type=str, default='fineweb-edu-10B', help='Local directory to save processed data shards')
+parser.add_argument('--remote_name', type=str, default='sample-10BT', help='Remote dataset name to load from HuggingFace (e.g., sample-10BT)')
+parser.add_argument('--shard_size', type=int, default=int(1e8), help='Number of tokens per data shard')
+parser.add_argument('--max_shards', type=int, default=3, help='Maximum number of shards to create (set to -1 for no limit)')
+args = parser.parse_args()
+
 # Configuration
-local_dir = 'fineweb-edu-10B'
-remote_name = 'sample-10BT'
-shard_size = int(1e8)
-max_shards = 3
+local_dir = args.local_dir
+remote_name = args.remote_name
+shard_size = args.shard_size
+max_shards = args.max_shards
 DATA_CACHE_DIR = os.path.join(os.path.dirname(__file__), local_dir)
 
 os.makedirs(DATA_CACHE_DIR, exist_ok=True)

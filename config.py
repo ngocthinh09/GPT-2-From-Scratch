@@ -8,6 +8,20 @@ class GPTConfig:
     n_head: int = 12                    # number of heads
     n_embd: int = 768                   # embedding dimensions
     
+GPT2_CONFIGS = {
+    "gpt2":         dict(n_layer=12, n_head=12, n_embd=768),  # 117M params
+    "gpt2-medium":  dict(n_layer=24, n_head=16, n_embd=1024), # 345M params
+    "gpt2-large":   dict(n_layer=36, n_head=20, n_embd=1280), # 762M params
+    "gpt2-xl":      dict(n_layer=48, n_head=25, n_embd=1600), # 1542M params
+}
+
+def get_model_config(model_type: str, **kwargs) -> GPTConfig:
+    if model_type not in GPT2_CONFIGS:
+        raise ValueError(f"Unsupported model type: {model_type}. Supported types: {list(GPT2_CONFIGS.keys())}")
+    config_params = GPT2_CONFIGS[model_type].copy()
+    config_params.update(kwargs)
+    return GPTConfig(**config_params)
+
 @dataclass
 class LRSchedulerConfig:
     max_lr: float = 6e-4                # peak learning rate
@@ -17,9 +31,8 @@ class LRSchedulerConfig:
 @dataclass
 class TrainingConfig:
     total_batch_size: int = 524288      # total batch size across all devices and gradient accumulation steps
-    B: int = 4                          # micro-batch size per device
+    B: int = 8                         # micro-batch size per device
     T: int = 1024                       # sequence length
-    use_torch_compile: bool = False     # whether to use torch.compile for the model
     warmup_steps: int = 21              # number of steps to warm up the learning rate
     max_steps: int = 381                # total number of training steps
 

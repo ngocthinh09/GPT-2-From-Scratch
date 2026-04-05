@@ -1,7 +1,8 @@
+import argparse
 import tiktoken
 import torch
 import torch.nn.functional as F
-from config import GPTConfig, LRSchedulerConfig, TrainingConfig, SamplingConfig
+from config import GPTConfig, LRSchedulerConfig, TrainingConfig, SamplingConfig, get_model_config
 from model.transformer import GPT
 from data.loader import DataLoaderLite
 from utils.lr_scheduler import LRScheduler
@@ -10,6 +11,8 @@ from utils.logger import get_logger
 from torch.nn.parallel import DistributedDataParallel as DDP
 import torch.distributed as dist
 import logging, time, os
+
+SEED = 1337
 
 sampling_config = SamplingConfig()
 lr_scheduler_config = LRSchedulerConfig()
@@ -21,7 +24,27 @@ lr_scheduler = LRScheduler(
     max_steps=training_config.max_steps
 )
 
+def save_checkpoint(step, val_loss, is_best: bool = False):
+    os.makedirs("checkpoints", exist_ok=True)
+    checkpoint = {
+        'step': step,
+        'model_state_dict': model.state_dict(),
+        'optimizer_state_dict': optimizer.state_dict(),
+        'val_loss': val_loss,
+        'config': original_model.config
+    }
+    torch.save(checkpoint, f'checkpoints/model_step_{step:06d}.pt')
+    if is_best:
+        torch.save(checkpoint, 'checkpoints/model_best.pt')
+    
+
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="NanoGPT Training Script")
+    parser.add_argument('--use_torch_compile', action='store_true', help='Use torch.compile for training')
+    parser.add_argument('--model_type', type=str, default='gpt2', help='gpt2|gpt2-medium|gpt2-large|gpt2-xl')
+    parser.add_argument('--resume', type=str, default=None, help='Path to checkpoint to resume from (e.g., checkpoints/model_step_30.pt)')
+    args = parser.parse_args()
+        
     ddp, ddp_rank, ddp_local_rank, ddp_world_size, master_process, device = ddp_setup()
     root_logger = get_logger(name="NanoGPT", log_dir="logs", master_process=master_process)
     logger = logging.getLogger(f'NanoGPT.train')
@@ -33,9 +56,9 @@ if __name__ == "__main__":
     if master_process:
         logger.info(f"Using device: {device}")
     
-    torch.manual_seed(1337)
+    torch.manual_seed(SEED)
     if torch.cuda.is_available():
-        torch.cuda.manual_seed(1337)
+        torch.cuda.manual_seed(SEED)
 
     enc = tiktoken.get_encoding("gpt2")
     
@@ -51,13 +74,17 @@ if __name__ == "__main__":
     train_loader = DataLoaderLite(B, T, ddp_rank, ddp_world_size, split='train')
     val_loader = DataLoaderLite(B, T, ddp_rank, ddp_world_size, split='val')
 
-    model = GPT(GPTConfig(vocab_size=50304)).to(device)
-    if training_config.use_torch_compile:
+    model_config = get_model_config(args.model_type, vocab_size=50304)
+    model = GPT(model_config).to(device)
+    if args.use_torch_compile:
+        if master_process: logger.info("Because using torch.compile, sampling will be skipped during training.")
         model = torch.compile(model)
     if ddp:
         model = DDP(model, device_ids=[ddp_local_rank])
     original_model = model.module if ddp else model
     
+    start_step = 0
+    best_val_loss = float('inf')
     optimizer = original_model.configure_optimizers(
         weight_decay=lr_scheduler_config.weigh_decay,
         learning_rate=lr_scheduler_config.max_lr,
@@ -65,7 +92,26 @@ if __name__ == "__main__":
         device_type=device_type
     )
     
-    for step in range(training_config.max_steps):
+    if args.resume is not None:
+        try:
+            if master_process:
+                logger.info(f"Resuming from checkpoint: {args.resume}")
+            torch.serialization.add_safe_globals([GPTConfig])
+            checkpoint = torch.load(args.resume, map_location=device)
+            ckpt_config = checkpoint['config']
+            if (ckpt_config.n_layer != model_config.n_layer or ckpt_config.n_head != model_config.n_head or ckpt_config.n_embd != model_config.n_embd):
+                raise ValueError(f"Checkpoint model config does not match current model config. Checkpoint config: {ckpt_config}, Current config: {model_config}")
+                import sys; sys.exit(1)
+            model.load_state_dict(checkpoint['model_state_dict'])
+            optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+            start_step = checkpoint['step'] + 1
+            best_val_loss = checkpoint.get('val_loss', float('inf'))
+            if master_process:
+                logger.info(f"Resumed from step {checkpoint['step']} with validation loss {best_val_loss:.4f}")
+        except Exception as e:
+            raise ValueError(f"Failed to load checkpoint from {args.resume}: {e}")
+    
+    for step in range(start_step, training_config.max_steps):
         t0 = time.time()
         
         # Calculate validation loss
@@ -87,23 +133,19 @@ if __name__ == "__main__":
                 if master_process:
                     logger.info(f"Validation Loss: {val_loss_accum.item():.4f}")
                     if step > 0 and (step % 30 == 0 or step == training_config.max_steps - 1):
-                        os.makedirs("checkpoints", exist_ok=True)
-                        checkpoint_path = os.path.join("checkpoints", f"model_step_{step}.pt")
-                        checkpoint = {
-                            'model': original_model.state_dict(),
-                            'config': original_model.config,
-                            'step': step,
-                            'val_loss': val_loss_accum.item()
-                        }
-                        torch.save(checkpoint, checkpoint_path)
+                        is_best = val_loss_accum.item() < best_val_loss
+                        if is_best:
+                            best_val_loss = val_loss_accum.item()
+                        save_checkpoint(step, val_loss_accum.item(), is_best)
+                        logger.info(f"Checkpoint saved at step {step}. {'(Best so far)' if is_best else ''}")
 
         # Sampling from the model
-        if step > 0 and step % 15 == 0 and not training_config.use_torch_compile and master_process:
+        if step > 0 and step % 15 == 0 and not args.use_torch_compile and master_process:
             model.eval()
             tokens = enc.encode(sampling_config.prompt)
             tokens = torch.tensor(tokens, dtype=torch.long).unsqueeze(0).repeat(sampling_config.num_return_sequences, 1)
             xgen = tokens.to(device)
-            sample_rng = torch.Generator(device=device).manual_seed(1337)
+            sample_rng = torch.Generator(device=device).manual_seed(SEED)
             while xgen.size(1) < sampling_config.max_length:
                 with torch.no_grad():
                     with torch.autocast(device_type=device_type, dtype=torch.bfloat16):
