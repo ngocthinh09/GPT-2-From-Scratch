@@ -6,8 +6,10 @@ from model.transformer import GPT
 from data.loader import DataLoaderLite
 from utils.lr_scheduler import LRScheduler
 from utils.distributed import ddp_setup, ddp_cleanup
+from utils.logger import get_logger
 from torch.nn.parallel import DistributedDataParallel as DDP
 import torch.distributed as dist
+import logging
 import time
 
 sampling_config = SamplingConfig()
@@ -22,9 +24,15 @@ lr_scheduler = LRScheduler(
 
 if __name__ == "__main__":
     ddp, ddp_rank, ddp_local_rank, ddp_world_size, master_process, device = ddp_setup()
+    root_logger = get_logger(name="NanoGPT", log_dir="logs", master_process=master_process)
+    logger = logging.getLogger(f'NanoGPT.train')
+    if master_process:
+        logger.info(f'STARTING TRAINING PROCESS')
+        logger.info(f"DDP World Size: {ddp_world_size}")
+        
     device_type = "cuda" if device.startswith("cuda") else "cpu"
     if master_process:
-        print(f"Using device: {device}")
+        logger.info(f"Using device: {device}")
     
     torch.manual_seed(1337)
     if torch.cuda.is_available():
@@ -38,9 +46,9 @@ if __name__ == "__main__":
     assert total_batch_size % (B * T * ddp_world_size) == 0, "Total batch size must be divisible by B * T * ddp_world_size"
     gradient_accumulation_steps = total_batch_size // (B * T * ddp_world_size)
     if master_process:
-        print(f"Total Desired Batch Size: {total_batch_size}")
-        print(f"Gradient Accumulation Steps: {gradient_accumulation_steps}")
-        
+        logger.info(f"Total Desired Batch Size: {total_batch_size}")
+        logger.info(f"Gradient Accumulation Steps: {gradient_accumulation_steps}")
+
     train_loader = DataLoaderLite(B, T, ddp_rank, ddp_world_size, split='train')
     val_loader = DataLoaderLite(B, T, ddp_rank, ddp_world_size, split='val')
 
@@ -78,7 +86,7 @@ if __name__ == "__main__":
                 if ddp:
                     dist.all_reduce(val_loss_accum, op=dist.ReduceOp.AVG)
                 if master_process:
-                    print(f"Validation Loss: {val_loss_accum.item():.4f}")
+                    logger.info(f"Validation Loss: {val_loss_accum.item():.4f}")
 
         # Sampling from the model
         if step > 0 and step % 15 == 0 and not training_config.use_torch_compile and master_process:
@@ -89,7 +97,8 @@ if __name__ == "__main__":
             sample_rng = torch.Generator(device=device).manual_seed(1337)
             while xgen.size(1) < sampling_config.max_length:
                 with torch.no_grad():
-                    logits, loss = model(xgen)
+                    with torch.autocast(device_type=device_type, dtype=torch.bfloat16):
+                        logits, loss = model(xgen)
                     logits = logits[:, -1, :] / sampling_config.temperature
                     probs = F.softmax(logits, dim=-1)
                     topk_probs, topk_indices = torch.topk(probs, k=20, dim=-1)
@@ -100,7 +109,7 @@ if __name__ == "__main__":
             for i in range(sampling_config.num_return_sequences):
                 tokens = xgen[i, :sampling_config.max_length].tolist()
                 decoded = enc.decode(tokens)
-                print(f"\n=== Sample {i+1} ===\n{decoded}\n")
+                logger.info(f"\n=== Sample {i+1} ===\n{decoded}\n")
             
         model.train()
         optimizer.zero_grad()
@@ -128,7 +137,7 @@ if __name__ == "__main__":
         dt = (t1 - t0) * 1000
         tokens_per_sec = train_loader.B * train_loader.T * ddp_world_size * gradient_accumulation_steps / (t1 - t0)
         if master_process:
-            print(f"Step: {step:5d}| Loss: {loss_accum.item()}| LR: {lr:.2e}| Grad Norm: {norm.item():.2f}| Time: {dt:.2f} ms| Tokens/sec: {tokens_per_sec:.2f}")
+            logger.info(f"Step: {step:5d}| Loss: {loss_accum.item()}| LR: {lr:.2e}| Grad Norm: {norm.item():.2f}| Time: {dt:.2f} ms| Tokens/sec: {tokens_per_sec:.2f}")
             
     if ddp:
         ddp_cleanup()

@@ -4,6 +4,7 @@ from torch.nn import functional as F
 import tiktoken
 import numpy as np
 import os
+import logging
 
 # Configuration
 data_folder = 'fineweb-edu-10B'
@@ -21,6 +22,7 @@ class DataLoaderLite:
         self.T = T
         self.process_rank = process_rank
         self.num_processes = num_processes
+        self.logger = logging.getLogger(f'NanoGPT.{__name__}')
         
         assert (split in ['train', 'val']), "split must be 'train' or 'val'"
         data_root = os.path.join(os.path.dirname(__file__), data_folder)
@@ -31,7 +33,7 @@ class DataLoaderLite:
         self.shards = shards
         assert (len(self.shards) > 0), f"No shards found for split '{split}' in {data_root}"
         if process_rank == 0:
-            print(f"DataLoaderLite found {len(self.shards)} shards for split '{split}' in {data_root}")
+            self.logger.info(f"DataLoaderLite found {len(self.shards)} shards for split '{split}' in {data_root}")
         self.reset()
         
     def reset(self):

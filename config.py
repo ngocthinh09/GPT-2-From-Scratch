@@ -2,18 +2,18 @@ from dataclasses import dataclass
 
 @dataclass
 class GPTConfig:
-    block_size: int = 1024  # max sequence length
-    vocab_size: int = 50257 # number of tokens: 50,000 BPE tokens + 256 bytes token + 1 <|endoftext|> token
-    n_layer: int = 12       # number of layers
-    n_head: int = 12        # number of heads
-    n_embd: int = 768       # embedding dimensions
+    block_size: int = 1024              # max sequence length
+    vocab_size: int = 50257             # number of tokens: 50,000 BPE tokens + 256 bytes token + 1 <|endoftext|> token
+    n_layer: int = 12                   # number of layers
+    n_head: int = 12                    # number of heads
+    n_embd: int = 768                   # embedding dimensions
     
 @dataclass
 class LRSchedulerConfig:
-    max_lr: float = 6e-4        # peak learning rate
-    min_lr: float = 6e-5        # minimum learning rate (after decay)
-    weigh_decay: float = 0.1    # weight decay for AdamW optimizer
-    
+    max_lr: float = 6e-4                # peak learning rate
+    min_lr: float = 6e-5                # minimum learning rate (after decay)
+    weigh_decay: float = 0.1            # weight decay for AdamW optimizer
+
 @dataclass
 class TrainingConfig:
     total_batch_size: int = 524288      # total batch size across all devices and gradient accumulation steps

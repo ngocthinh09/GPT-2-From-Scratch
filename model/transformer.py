@@ -8,6 +8,7 @@ import torch.nn as nn
 from torch.nn import functional as F
 from layers import Block
 import inspect
+import logging
 
 class GPT(nn.Module):
     def __init__(self, config: GPTConfig):
@@ -24,6 +25,7 @@ class GPT(nn.Module):
     
         self.transformer.wte.weight = self.lm_head.weight
         self.apply(self._init_weights)
+        self.logger = logging.getLogger(f'NanoGPT.{__name__}')
     
     def _init_weights(self, module):
         if isinstance(module, nn.Linear):
@@ -107,13 +109,13 @@ class GPT(nn.Module):
         num_decay_params = sum(p.numel() for p in decay_params)
         num_nodecay_params = sum(p.numel() for p in nodecay_params)
         if master_process:
-            print(f"Num decay parameter tensors: {len(decay_params)}, with {num_decay_params} parameters")
-            print(f"Num non-decayed parameter tensors: {len(nodecay_params)}, with {num_nodecay_params} parameters")
+            self.logger.info(f"Num decay parameter tensors: {len(decay_params)}, with {num_decay_params} parameters")
+            self.logger.info(f"Num non-decayed parameter tensors: {len(nodecay_params)}, with {num_nodecay_params} parameters")
         
         fused_available = 'fused' in inspect.signature(torch.optim.AdamW).parameters
         use_fused = fused_available and device_type == 'cuda'
         if master_process:
-            print(f"Using fused AdamW: {use_fused}")
+            self.logger.info(f"Using fused AdamW: {use_fused}")
         optimizer = torch.optim.AdamW(optim_groups, lr=learning_rate, betas=(0.9, 0.95), eps=1e-8, fused=use_fused)
         return optimizer
 
