@@ -10,8 +10,8 @@ import time
 
 max_lr = 6e-4
 min_lr = max_lr * 0.1
-warmup_steps = 10
-max_steps = 100
+warmup_steps = 21
+max_steps = 381
 
 lr_scheduler = LRScheduler(max_lr, min_lr, warmup_steps, max_steps)
 
@@ -33,7 +33,7 @@ if __name__ == "__main__":
     if master_process:
         print(f"Total Desired Batch Size: {total_batch_size}")
         print(f"Gradient Accumulation Steps: {gradient_accumulation_steps}")
-    train_loader = DataLoaderLite(B, T, ddp_rank, ddp_world_size)
+    train_loader = DataLoaderLite(B, T, ddp_rank, ddp_world_size, split='train')
 
     model = GPT(GPTConfig(vocab_size=50304)).to(device)
     model = torch.compile(model)
@@ -70,7 +70,7 @@ if __name__ == "__main__":
         dt = (t1 - t0) * 1000
         tokens_per_sec = train_loader.B * train_loader.T * ddp_world_size * gradient_accumulation_steps / (t1 - t0)
         if master_process:
-            print(f"Step: {step}| Loss: {loss_accum.item()}| LR: {lr:.2e}| Grad Norm: {norm.item():.2f}| Time: {dt:.2f} ms| Tokens/sec: {tokens_per_sec:.2f}")
+            print(f"Step: {step:5d}| Loss: {loss_accum.item()}| LR: {lr:.2e}| Grad Norm: {norm.item():.2f}| Time: {dt:.2f} ms| Tokens/sec: {tokens_per_sec:.2f}")
             
     if ddp:
         ddp_cleanup()

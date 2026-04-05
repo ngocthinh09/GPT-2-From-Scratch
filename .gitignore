@@ -58,3 +58,6 @@ Thumbs.db
 .mypy_cache/
 .ruff_cache/
 .pyright/
+
+# Numpy file
+*.npy
