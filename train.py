@@ -1,5 +1,5 @@
 import torch
-from config import GPTConfig
+from config import GPTConfig, LRSchedulerConfig, TrainingConfig
 from model.transformer import GPT
 from data.loader import DataLoaderLite
 from utils.lr_scheduler import LRScheduler
@@ -8,16 +8,18 @@ from torch.nn.parallel import DistributedDataParallel as DDP
 import torch.distributed as dist
 import time
 
-max_lr = 6e-4
-min_lr = max_lr * 0.1
-warmup_steps = 21
-max_steps = 381
-
-lr_scheduler = LRScheduler(max_lr, min_lr, warmup_steps, max_steps)
+lr_scheduler_config = LRSchedulerConfig()
+training_config = TrainingConfig()
+lr_scheduler = LRScheduler(
+    max_lr=lr_scheduler_config.max_lr,
+    min_lr=lr_scheduler_config.min_lr,
+    warmup_steps=training_config.warmup_steps,
+    max_steps=training_config.max_steps
+)
 
 if __name__ == "__main__":
     ddp, ddp_rank, ddp_local_rank, ddp_world_size, master_process, device = ddp_setup()
-    device_type = device.split(':')[0]
+    device_type = "cuda" if device.startswith("cuda") else "cpu"
     if master_process:
         print(f"Using device: {device}")
     
@@ -25,26 +27,54 @@ if __name__ == "__main__":
     if torch.cuda.is_available():
         torch.cuda.manual_seed(1337)
     
-    total_batch_size = 524288
-    B = 4
-    T = 1024
+    total_batch_size = training_config.total_batch_size
+    B = training_config.B
+    T = training_config.T
     assert total_batch_size % (B * T * ddp_world_size) == 0, "Total batch size must be divisible by B * T * ddp_world_size"
     gradient_accumulation_steps = total_batch_size // (B * T * ddp_world_size)
     if master_process:
         print(f"Total Desired Batch Size: {total_batch_size}")
         print(f"Gradient Accumulation Steps: {gradient_accumulation_steps}")
+        
     train_loader = DataLoaderLite(B, T, ddp_rank, ddp_world_size, split='train')
+    val_loader = DataLoaderLite(B, T, ddp_rank, ddp_world_size, split='val')
 
     model = GPT(GPTConfig(vocab_size=50304)).to(device)
-    model = torch.compile(model)
+    if training_config.use_torch_compile:
+        model = torch.compile(model)
     if ddp:
         model = DDP(model, device_ids=[ddp_local_rank])
     original_model = model.module if ddp else model
     
-    optimizer = original_model.configure_optimizers(weight_decay=0.1, learning_rate=max_lr, master_process=master_process, device=device_type)
+    optimizer = original_model.configure_optimizers(
+        weight_decay=lr_scheduler_config.weigh_decay,
+        learning_rate=lr_scheduler_config.max_lr,
+        master_process=master_process,
+        device_type=device_type
+    )
     
-    for step in range(max_steps):
+    for step in range(training_config.max_steps):
         t0 = time.time()
+        
+        if step % 15 == 0:
+            model.eval()
+            val_loader.reset()
+            with torch.no_grad():
+                val_loss_accum = 0.0
+                val_loss_step = 20
+                for _ in range(val_loss_step):
+                    x, y = val_loader.next_batch()
+                    x, y = x.to(device), y.to(device)
+                    with torch.autocast(device_type=device_type, dtype=torch.bfloat16):
+                        logits, loss = model(x, y)
+                    loss = loss / val_loss_step
+                    val_loss_accum += loss.detach()
+                if ddp:
+                    dist.all_reduce(val_loss_accum, op=dist.ReduceOp.AVG)
+                if master_process:
+                    print(f"Validation Loss: {val_loss_accum.item():.4f}")
+                
+        model.train()
         optimizer.zero_grad()
         loss_accum = 0.0
         for micro_step in range(gradient_accumulation_steps):

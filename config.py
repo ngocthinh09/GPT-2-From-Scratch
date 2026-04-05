@@ -7,3 +7,18 @@ class GPTConfig:
     n_layer: int = 12       # number of layers
     n_head: int = 12        # number of heads
     n_embd: int = 768       # embedding dimensions
+    
+@dataclass
+class LRSchedulerConfig:
+    max_lr: float = 6e-4        # peak learning rate
+    min_lr: float = 6e-5        # minimum learning rate (after decay)
+    weigh_decay: float = 0.1    # weight decay for AdamW optimizer
+    
+@dataclass
+class TrainingConfig:
+    total_batch_size: int = 524288      # total batch size across all devices and gradient accumulation steps
+    B: int = 4                          # micro-batch size per device
+    T: int = 1024                       # sequence length
+    use_torch_compile: bool = False     # whether to use torch.compile for the model
+    warmup_steps: int = 21              # number of steps to warm up the learning rate
+    max_steps: int = 381                # total number of training steps

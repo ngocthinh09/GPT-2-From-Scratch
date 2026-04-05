@@ -32,6 +32,9 @@ class DataLoaderLite:
         assert (len(self.shards) > 0), f"No shards found for split '{split}' in {data_root}"
         if process_rank == 0:
             print(f"DataLoaderLite found {len(self.shards)} shards for split '{split}' in {data_root}")
+        self.reset()
+        
+    def reset(self):
         self.current_shard_index = 0
         self.tokens = load_tokens(self.shards[self.current_shard_index])
         self.current_position = self.B * self.T * self.process_rank
